@@ -183,6 +183,8 @@
       document.getElementById('drawer-overlay').classList.add('open');
     }
     function closeDrawer() {
+      const ta = document.getElementById('ctx-textarea');
+      if (ta) { htmx.trigger(ta, 'blur'); }
       document.getElementById('drawer').classList.remove('open');
       document.getElementById('drawer-overlay').classList.remove('open');
     }

@@ -36,7 +36,8 @@
     <label><small>Context</small></label>
     <textarea id="ctx-textarea" style="min-height:120px;font-size:0.85rem;font-family:monospace"
               hx-patch="/api/tasks/{{.ID}}"
-              hx-trigger="blur"
+              hx-trigger="keyup changed delay:600ms, blur"
+              hx-swap="none"
               hx-vals='js:{context: document.getElementById("ctx-textarea").value}'
     >{{.Context}}</textarea>
   </div>

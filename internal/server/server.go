@@ -171,9 +171,25 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request, id int64) {
 
 func (s *Server) updateTask(w http.ResponseWriter, r *http.Request, id int64) {
 	var tu model.TaskUpdate
-	if err := json.NewDecoder(r.Body).Decode(&tu); err != nil {
-		http.Error(w, "invalid body: "+err.Error(), http.StatusBadRequest)
-		return
+	ct := r.Header.Get("Content-Type")
+	if strings.HasPrefix(ct, "application/x-www-form-urlencoded") {
+		r.ParseForm()
+		if v := r.FormValue("context"); v != "" {
+			tu.Context = &v
+		}
+		if v := r.FormValue("title"); v != "" {
+			tu.Title = &v
+		}
+		// An empty context sent via form means clear it
+		if _, ok := r.Form["context"]; ok && r.FormValue("context") == "" {
+			empty := ""
+			tu.Context = &empty
+		}
+	} else {
+		if err := json.NewDecoder(r.Body).Decode(&tu); err != nil {
+			http.Error(w, "invalid body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 	task, err := s.store.Update(id, tu)
 	if err != nil {
