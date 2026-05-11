@@ -100,6 +100,8 @@ func cmdAdd(args []string) {
 
 	status := model.StatusActive
 	conditionType := model.ConditionManual
+	sourceType := model.SourceManual
+	sourceLabel := ""
 	var timeout int64
 
 	// Parse flags
@@ -116,7 +118,9 @@ func cmdAdd(args []string) {
 			}
 		case "-s", "--source":
 			i++
-			// handled below
+			if i < len(args) {
+				sourceType, sourceLabel = parseSource(args[i])
+			}
 		default:
 			titleParts = append(titleParts, args[i])
 		}
@@ -124,7 +128,7 @@ func cmdAdd(args []string) {
 
 	title := strings.Join(titleParts, " ")
 	if title == "" {
-		fmt.Fprintln(os.Stderr, "usage: td add [-w] [-t duration] <title>")
+		fmt.Fprintln(os.Stderr, "usage: td add [-w] [-t duration] [-s source[:label]] <title>")
 		os.Exit(1)
 	}
 
@@ -133,7 +137,8 @@ func cmdAdd(args []string) {
 		Status:           status,
 		ConditionType:    conditionType,
 		ConditionTimeout: timeout,
-		SourceType:       model.SourceManual,
+		SourceType:       sourceType,
+		SourceLabel:      sourceLabel,
 	}
 
 	task, err := cl.Add(tc)
@@ -431,7 +436,7 @@ func printUsage() {
 
 commands:
   serve                   start the daemon
-  add [-w] [-t dur] <title>  add a task
+  add [-w] [-t dur] [-s type[:label]] <title>  add a task
   list [-w] [-d]          list active/waiting/done tasks
   show <id>               show task details
   edit <id> title <text>  edit task title
@@ -455,6 +460,22 @@ func mustParseID(s string) int64 {
 		os.Exit(1)
 	}
 	return id
+}
+
+func parseSource(s string) (string, string) {
+	parts := strings.SplitN(s, ":", 2)
+	typ := parts[0]
+	label := ""
+	if len(parts) == 2 {
+		label = parts[1]
+	}
+	switch typ {
+	case model.SourceAgent, model.SourceExternal, model.SourceManual:
+		return typ, label
+	default:
+		fmt.Fprintf(os.Stderr, "unknown source type '%s', using 'manual'\n", typ)
+		return model.SourceManual, ""
+	}
 }
 
 func parseTimeout(s string) int64 {
