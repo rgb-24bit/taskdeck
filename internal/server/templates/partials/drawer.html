@@ -1,0 +1,79 @@
+<div style="margin-top:0">
+  <h3 style="margin-top:0">#{{.ID}} {{.Title}}</h3>
+
+  <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:1rem">
+    <span class="badge {{if eq .Status "active"}}timeout{{end}}">{{.Status}}</span>
+    <span class="badge">{{.ConditionType}}</span>
+    <span class="badge">{{.SourceType}}</span>
+  </div>
+
+  {{if and (eq .Status "waiting") .EnteredWaitAt .ConditionTimeout}}
+  <div style="margin-bottom:1rem;padding:0.5rem;background:var(--pico-secondary-background);border-radius:4px">
+    <small>Entered pool: {{fmtTime .EnteredWaitAt}}</small><br>
+    <small>Activation: {{fmtRemain .EnteredWaitAt .ConditionTimeout}}</small>
+    <progress value="{{progressValue .EnteredWaitAt .ConditionTimeout}}" max="100" style="width:100%;margin-top:0.25rem"></progress>
+  </div>
+  {{end}}
+
+  <div style="margin-bottom:1rem">
+    <label><small>Source</small></label>
+    <div>{{.SourceType}}{{if .SourceLabel}} — {{.SourceLabel}}{{end}}</div>
+  </div>
+
+  <div style="margin-bottom:1rem">
+    <label><small>Created</small></label>
+    <div>{{fmtTime .CreatedAt}}</div>
+  </div>
+
+  {{if .DoneAt}}
+  <div style="margin-bottom:1rem">
+    <label><small>Done</small></label>
+    <div>{{fmtTime .DoneAt}}</div>
+  </div>
+  {{end}}
+
+  <div style="margin-bottom:1rem">
+    <label><small>Context</small></label>
+    <textarea id="ctx-textarea" style="min-height:120px;font-size:0.85rem;font-family:monospace"
+              hx-patch="/api/tasks/{{.ID}}"
+              hx-trigger="blur"
+              hx-vals='js:{context: document.getElementById("ctx-textarea").value}'
+    >{{.Context}}</textarea>
+  </div>
+
+  <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
+    {{if eq .Status "active"}}
+    <button class="secondary"
+            hx-post="/api/tasks/{{.ID}}/done"
+            hx-on::after-request="location.reload()">
+      ✓ Done
+    </button>
+    <button class="secondary"
+            hx-post="/api/tasks/{{.ID}}/wait"
+            hx-vals='js:JSON.stringify({condition_type:"manual",condition_timeout:0})'
+            hx-on::after-request="location.reload()">
+      → Move to Pool
+    </button>
+    {{end}}
+
+    {{if eq .Status "waiting"}}
+    <button class="secondary"
+            hx-post="/api/tasks/{{.ID}}/activate"
+            hx-on::after-request="location.reload()">
+      Activate
+    </button>
+    <button class="secondary"
+            hx-post="/api/tasks/{{.ID}}/done"
+            hx-on::after-request="location.reload()">
+      ✓ Done
+    </button>
+    {{end}}
+
+    <button class="secondary contrast"
+            hx-delete="/api/tasks/{{.ID}}"
+            hx-confirm="Hard delete this task?"
+            hx-on::after-request="location.reload()">
+      🗑 Delete
+    </button>
+  </div>
+</div>

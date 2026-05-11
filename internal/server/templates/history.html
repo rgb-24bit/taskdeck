@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TaskDeck — History</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <script src="https://unpkg.com/htmx.org@2.0.3"></script>
+  <style>
+    :root { --pico-font-size: 90%; }
+    body { max-width: 1000px; margin: 0 auto; padding: 1rem; }
+    nav { margin-bottom: 1.5rem; }
+    nav ul { list-style: none; padding: 0; display: flex; gap: 1rem; }
+    nav a { text-decoration: none; }
+    nav a.active { font-weight: bold; }
+    .task-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0; border-bottom: 1px solid var(--pico-muted-border-color); }
+    .task-row .id { color: var(--pico-muted-color); min-width: 3rem; }
+    .task-row .title { flex: 1; }
+    .task-row .date { font-size: 0.8rem; color: var(--pico-muted-color); }
+    .empty-state { text-align: center; color: var(--pico-muted-color); padding: 2rem 0; }
+  </style>
+</head>
+<body>
+  <nav>
+    <strong>TaskDeck</strong>
+    <ul>
+      <li><a href="/" hx-boost="true">Tasks</a></li>
+      <li><a href="/history" class="active" hx-boost="true">History</a></li>
+    </ul>
+  </nav>
+
+  <h2>Completed Tasks</h2>
+  <p style="color:var(--pico-muted-color);font-size:0.85rem">
+    Showing {{.From}} — {{.To}}
+  </p>
+
+  {{if .Tasks}}
+  <div id="history-list">
+    {{range .Tasks}}
+    <div class="task-row">
+      <span class="id">#{{.ID}}</span>
+      <span class="title">{{.Title}}</span>
+      <span class="date">{{fmtTime .DoneAt}}</span>
+    </div>
+    {{end}}
+  </div>
+  {{else}}
+  <div class="empty-state">No completed tasks in this period.</div>
+  {{end}}
+</body>
+</html>
