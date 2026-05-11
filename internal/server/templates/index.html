@@ -34,8 +34,6 @@
     .task-item .id { color: var(--pico-muted-color); font-size: 0.8rem; min-width: 2rem; }
     .task-item .title { flex: 1; }
     .task-item .meta { font-size: 0.75rem; color: var(--pico-muted-color); }
-    .task-item .actions { display: flex; gap: 0.25rem; }
-    .task-item .actions button { padding: 0.15rem 0.4rem; font-size: 0.7rem; }
     .wait-group { margin-bottom: 1rem; }
     .wait-group h3 { font-size: 0.9rem; color: var(--pico-muted-color); margin: 0.5rem 0; }
     .badge {
@@ -194,120 +192,93 @@
       const el = document.getElementById('toast');
       el.textContent = msg;
       el.classList.add('show');
-      setTimeout(() => el.classList.remove('show'), 2000);
+      setTimeout(function() { el.classList.remove('show'); }, 2000);
+    }
+
+    // Shared group — all lists accept items from each other
+    const sharedGroup = { name: 'shared', put: true };
+
+    function sortAdd(evt, targetPool) {
+      const id = parseInt(evt.item.dataset.id);
+      switch (targetPool) {
+        case 'queue':
+          fetch('/api/tasks/' + id + '/activate', {method: 'POST'})
+            .then(function() { toast('Activated'); location.reload(); });
+          break;
+        case 'timeout':
+          fetch('/api/tasks/' + id + '/wait', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({condition_type: 'timeout', condition_timeout: 1800})
+          }).then(function() { toast('Moved to timeout pool'); location.reload(); });
+          break;
+        case 'manual':
+          fetch('/api/tasks/' + id + '/wait', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({condition_type: 'manual', condition_timeout: 0})
+          }).then(function() { toast('Moved to manual pool'); location.reload(); });
+          break;
+      }
+    }
+
+    function sortEnd(evt, sourcePool) {
+      if (evt.from !== evt.to) return;
+      if (sourcePool !== 'queue') return;
+      const id = parseInt(evt.item.dataset.id);
+      const prevEl = evt.item.previousElementSibling;
+      const afterId = prevEl ? parseInt(prevEl.dataset.id) : 0;
+      var body = afterId === 0
+        ? JSON.stringify({after_id: 0, position: 'top'})
+        : JSON.stringify({after_id: afterId});
+      fetch('/api/tasks/' + id + '/reorder', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: body
+      }).then(function() { toast(afterId === 0 ? 'Moved to top' : 'Reordered'); });
     }
 
     // Sortable: Work Queue
-    const queueList = document.getElementById('queue-list');
-    if (queueList) {
-      new Sortable(queueList, {
+    (function() {
+      var el = document.getElementById('queue-list');
+      if (!el) return;
+      el.setAttribute('data-pool', 'queue');
+      new Sortable(el, {
         handle: '.handle',
         animation: 150,
-        group: {
-          name: 'shared',
-          put: function(to, from, dragEl) {
-            return dragEl.dataset.status !== 'waiting' || true;
-          }
-        },
-        onEnd: function(evt) {
-          const id = parseInt(evt.item.dataset.id);
-          const prevEl = evt.item.previousElementSibling;
-          const afterId = prevEl ? parseInt(prevEl.dataset.id) : 0;
-          if (afterId === 0) {
-            fetch(`/api/tasks/${id}/reorder`, {
-              method: 'POST',
-              headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({after_id: 0, position: 'top'})
-            }).then(() => toast('Moved to top'));
-          } else {
-            fetch(`/api/tasks/${id}/reorder`, {
-              method: 'POST',
-              headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({after_id: afterId})
-            }).then(() => toast('Reordered'));
-          }
-
-          // If moved from waiting pool, also activate
-          if (evt.from.dataset.pool === 'timeout' || evt.from.dataset.pool === 'manual') {
-            fetch(`/api/tasks/${id}/activate`, {method: 'POST'})
-              .then(() => location.reload());
-          }
-        }
+        group: sharedGroup,
+        onEnd: function(evt) { sortEnd(evt, 'queue'); },
+        onAdd: function(evt) { sortAdd(evt, 'queue'); }
       });
-    }
+    })();
 
     // Sortable: Waiting Pool — Timeout
-    const poolTimeout = document.getElementById('pool-timeout-list');
-    if (poolTimeout) {
-      poolTimeout.setAttribute('data-pool', 'timeout');
-      new Sortable(poolTimeout, {
+    (function() {
+      var el = document.getElementById('pool-timeout-list');
+      if (!el) return;
+      el.setAttribute('data-pool', 'timeout');
+      new Sortable(el, {
         handle: '.handle',
         animation: 150,
-        group: {
-          name: 'shared',
-          put: function(to, from, dragEl) {
-            // From queue to timeout pool: move to wait
-            return true;
-          }
-        },
-        onEnd: function(evt) {
-          const id = parseInt(evt.item.dataset.id);
-          const fromPool = evt.from.dataset.pool;
-          const toPool = evt.to.dataset.pool;
-
-          if (evt.from === evt.to) {
-            // Within same pool — do nothing for order
-            return;
-          }
-
-          if (toPool === 'timeout') {
-            // Moved to timeout pool: set timeout condition
-            fetch(`/api/tasks/${id}/wait`, {
-              method: 'POST',
-              headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({condition_type: 'timeout', condition_timeout: 1800})
-            }).then(() => { toast('Moved to timeout pool'); location.reload(); });
-          } else if (toPool === 'manual') {
-            fetch(`/api/tasks/${id}/wait`, {
-              method: 'POST',
-              headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({condition_type: 'manual', condition_timeout: 0})
-            }).then(() => { toast('Moved to manual pool'); location.reload(); });
-          }
-        }
+        group: sharedGroup,
+        onEnd: function(evt) { sortEnd(evt, 'timeout'); },
+        onAdd: function(evt) { sortAdd(evt, 'timeout'); }
       });
-    }
+    })();
 
     // Sortable: Waiting Pool — Manual
-    const poolManual = document.getElementById('pool-manual-list');
-    if (poolManual) {
-      poolManual.setAttribute('data-pool', 'manual');
-      new Sortable(poolManual, {
+    (function() {
+      var el = document.getElementById('pool-manual-list');
+      if (!el) return;
+      el.setAttribute('data-pool', 'manual');
+      new Sortable(el, {
         handle: '.handle',
         animation: 150,
-        group: {
-          name: 'shared',
-          put: true
-        },
-        onEnd: function(evt) {
-          const id = parseInt(evt.item.dataset.id);
-          const toPool = evt.to.dataset.pool;
-
-          if (evt.from === evt.to) return;
-
-          if (toPool === 'manual') {
-            fetch(`/api/tasks/${id}/wait`, {
-              method: 'POST',
-              headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({condition_type: 'manual', condition_timeout: 0})
-            }).then(() => { toast('Moved to manual pool'); location.reload(); });
-          }
-        }
+        group: sharedGroup,
+        onEnd: function(evt) { sortEnd(evt, 'manual'); },
+        onAdd: function(evt) { sortAdd(evt, 'manual'); }
       });
-    }
-
-    // Drag items from waiting pool to queue = activate
-    // Handled by Sortable group onEnd in queueList
+    })();
 
     // Keyboard shortcut
     document.addEventListener('keydown', function(e) {
