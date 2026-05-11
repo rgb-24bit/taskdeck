@@ -111,9 +111,18 @@
             hx-on::after-request="location.reload()">
         <input type="text" name="title" placeholder="New task..."
                required style="min-height:2.5rem;padding:0.5rem 0.75rem;font-size:1rem">
-        <input type="hidden" name="status" value="active">
         <input type="hidden" name="source_type" value="manual">
-        <input type="hidden" name="condition_type" value="manual">
+        <div style="display:flex;gap:0.5rem;margin-top:0.5rem">
+          <select name="status" style="flex:1;min-height:2.5rem;padding:0.25rem 0.5rem;font-size:0.9rem">
+            <option value="active">Work Queue</option>
+            <option value="waiting">Waiting Pool</option>
+          </select>
+          <input type="text" name="condition_timeout" placeholder="Timeout e.g. 30m, 2h"
+                 style="flex:1;min-height:2.5rem;padding:0.25rem 0.5rem;font-size:0.85rem">
+        </div>
+        <small style="color:var(--pico-muted-color);display:block;margin-top:0.25rem">
+          Leave timeout blank for manual activation. Examples: 30m, 2h, 1d.
+        </small>
         <button type="submit" style="margin-top:0.5rem;width:100%;min-height:2.5rem;padding:0.5rem 1rem;font-size:0.95rem">Add</button>
       </form>
     </div>

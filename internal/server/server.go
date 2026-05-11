@@ -133,6 +133,12 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		tc.SourceType = r.FormValue("source_type")
 		tc.SourceLabel = r.FormValue("source_label")
 		tc.ConditionType = r.FormValue("condition_type")
+		if timeoutStr := r.FormValue("condition_timeout"); timeoutStr != "" {
+			if d, err := parseDuration(timeoutStr); err == nil {
+				tc.ConditionTimeout = int64(d.Seconds())
+				tc.ConditionType = model.ConditionTimeout
+			}
+		}
 		if tc.Status == "" {
 			tc.Status = model.StatusActive
 		}
