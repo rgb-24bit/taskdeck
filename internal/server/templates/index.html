@@ -208,7 +208,7 @@
     const sharedGroup = { name: 'shared', put: true };
 
     function sortAdd(evt, targetPool) {
-      const id = parseInt(evt.item.dataset.id);
+      const id = evt.item.dataset.id;
       switch (targetPool) {
         case 'queue':
           fetch('/api/tasks/' + id + '/activate', {method: 'POST'})
@@ -234,12 +234,12 @@
     function sortEnd(evt, sourcePool) {
       if (evt.from !== evt.to) return;
       if (sourcePool !== 'queue') return;
-      const id = parseInt(evt.item.dataset.id);
+      const id = evt.item.dataset.id;
       const prevEl = evt.item.previousElementSibling;
-      const afterId = prevEl ? parseInt(prevEl.dataset.id) : 0;
-      var body = afterId === 0
-        ? JSON.stringify({after_id: 0, position: 'top'})
-        : JSON.stringify({after_id: afterId});
+      const after = prevEl ? prevEl.dataset.id : '0';
+      var body = after === '0'
+        ? JSON.stringify({after: '0', position: 'top'})
+        : JSON.stringify({after: after});
       fetch('/api/tasks/' + id + '/reorder', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},

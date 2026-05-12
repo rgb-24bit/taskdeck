@@ -1,6 +1,12 @@
 <div style="margin-top:0">
   <h3 style="margin-top:0">#{{.ID}} {{.Title}}</h3>
 
+  {{if .Key}}
+  <div style="margin-bottom:0.5rem">
+    <small style="color:var(--pico-secondary)">key: {{.Key}}</small>
+  </div>
+  {{end}}
+
   <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:1rem">
     <span class="badge {{if eq .Status "active"}}timeout{{end}}">{{.Status}}</span>
     <span class="badge">{{.ConditionType}}</span>

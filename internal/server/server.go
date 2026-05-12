@@ -46,18 +46,18 @@ func (s *Server) handleTasksCollection(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTask(w http.ResponseWriter, r *http.Request) {
-	// Normalize: /api/tasks/3/, /api/tasks/3/done, /api/tasks/3/activate, /api/tasks/3/wait, /api/tasks/3/reorder
+	// /api/tasks/{id-or-key}, /api/tasks/{id-or-key}/done, etc.
 	path := strings.TrimPrefix(r.URL.Path, "/api/tasks/")
 	parts := strings.Split(strings.TrimSuffix(path, "/"), "/")
 
 	if len(parts) == 0 || parts[0] == "" {
-		http.Error(w, "missing task id", http.StatusBadRequest)
+		http.Error(w, "missing task identifier", http.StatusBadRequest)
 		return
 	}
 
-	id, err := strconv.ParseInt(parts[0], 10, 64)
+	id, err := s.resolveID(parts[0])
 	if err != nil {
-		http.Error(w, "invalid task id", http.StatusBadRequest)
+		http.Error(w, "task not found: "+parts[0], http.StatusNotFound)
 		return
 	}
 
@@ -106,6 +106,18 @@ func (s *Server) handleTask(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// resolveID resolves a task identifier (numeric ID or string key) to an int64 ID.
+func (s *Server) resolveID(identifier string) (int64, error) {
+	if id, err := strconv.ParseInt(identifier, 10, 64); err == nil {
+		return id, nil
+	}
+	task, err := s.store.GetByKey(identifier)
+	if err != nil {
+		return 0, err
+	}
+	return task.ID, nil
+}
+
 func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	params := model.ListParams{
 		Status: r.URL.Query().Get("status"),
@@ -139,6 +151,9 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 				tc.ConditionType = model.ConditionTimeout
 			}
 		}
+		if key := r.FormValue("key"); key != "" {
+			tc.Key = &key
+		}
 		if tc.Status == "" {
 			tc.Status = model.StatusActive
 		}
@@ -148,7 +163,7 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	task, err := s.store.Create(tc)
+	task, isUpdate, err := s.store.Create(tc)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -158,7 +173,11 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	writeJSON(w, 201, task)
+	status := 201
+	if isUpdate {
+		status = 200
+	}
+	writeJSON(w, status, task)
 }
 
 func (s *Server) getTask(w http.ResponseWriter, r *http.Request, id int64) {

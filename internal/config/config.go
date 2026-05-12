@@ -9,6 +9,7 @@ import (
 )
 
 type Config struct {
+	Host    string `yaml:"host"`
 	Port    int    `yaml:"port"`
 	DBPath  string `yaml:"db_path"`
 	LogPath string `yaml:"log_path"`

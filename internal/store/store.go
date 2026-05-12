@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/rgb-24bit/taskdeck/internal/model"
@@ -35,6 +36,7 @@ func (s *Store) migrate() error {
 	_, err := s.db.Exec(`
 		CREATE TABLE IF NOT EXISTS tasks (
 			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			key             TEXT,
 			title           TEXT NOT NULL,
 			context         TEXT DEFAULT '',
 			status          TEXT NOT NULL DEFAULT 'active',
@@ -51,15 +53,84 @@ func (s *Store) migrate() error {
 		CREATE INDEX IF NOT EXISTS idx_status ON tasks(status);
 		CREATE INDEX IF NOT EXISTS idx_sort ON tasks(sort_order);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Migrate existing databases that lack the key column.
+	s.db.Exec(`ALTER TABLE tasks ADD COLUMN key TEXT`)
+	s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_key ON tasks(key)`)
+	return nil
 }
 
-func (s *Store) Create(tc model.TaskCreate) (*model.Task, error) {
+// resolveIdentifier resolves a string that may be a numeric ID or a key.
+// If parseable to int64, returns the ID. Otherwise looks up by key.
+// Only used by callers that need an int64 ID after resolution.
+func (s *Store) resolveIdentifier(identifier string) (int64, error) {
+	if id, err := strconv.ParseInt(identifier, 10, 64); err == nil {
+		return id, nil
+	}
+	return s.resolveKey(identifier)
+}
+
+func (s *Store) resolveKey(key string) (int64, error) {
+	var id int64
+	err := s.db.QueryRow(
+		`SELECT id FROM tasks WHERE key = ? AND deleted_at IS NULL`, key,
+	).Scan(&id)
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+// GetByKey returns a task by its unique key.
+func (s *Store) GetByKey(key string) (*model.Task, error) {
+	var t taskRow
+	err := s.db.QueryRow(
+		`SELECT id, key, title, context, status, source_type, source_label, condition_type, condition_timeout, sort_order, entered_wait_at, created_at, done_at, deleted_at
+		 FROM tasks WHERE key = ? AND deleted_at IS NULL`, key,
+	).Scan(&t.ID, &t.Key, &t.Title, &t.Context, &t.Status, &t.SourceType, &t.SourceLabel,
+		&t.ConditionType, &t.ConditionTimeout, &t.SortOrder, &t.EnteredWaitAt, &t.CreatedAt, &t.DoneAt, &t.DeletedAt)
+	if err != nil {
+		return nil, err
+	}
+	return t.toTask(), nil
+}
+
+// Create inserts a new task. If Key is set and matches an existing non-done task,
+// it updates that task's title (and context if provided) instead.
+// Returns the created/updated task and whether it was an update.
+func (s *Store) Create(tc model.TaskCreate) (*model.Task, bool, error) {
+	if tc.Key != nil {
+		existing, err := s.GetByKey(*tc.Key)
+		if err == nil {
+			if existing.Status == model.StatusDone {
+				return nil, false, fmt.Errorf("task with key %q is done, use cleanup first", *tc.Key)
+			}
+			// Upsert: update existing task.
+			existing.Title = tc.Title
+			if tc.Context != "" {
+				existing.Context = tc.Context
+			}
+			_, err = s.db.Exec(
+				`UPDATE tasks SET title=?, context=? WHERE id=?`,
+				existing.Title, existing.Context, existing.ID,
+			)
+			if err != nil {
+				return nil, false, fmt.Errorf("upsert task: %w", err)
+			}
+			return existing, true, nil
+		}
+		// Key doesn't exist, proceed with insert.
+	}
+
 	now := time.Now().Format(time.RFC3339)
 	var maxOrder int64
 	s.db.QueryRow("SELECT COALESCE(MAX(sort_order), -1) FROM tasks WHERE status = 'active' AND deleted_at IS NULL").Scan(&maxOrder)
 
 	task := &model.Task{
+		Key:              tc.Key,
 		Title:            tc.Title,
 		Context:          tc.Context,
 		Status:           tc.Status,
@@ -87,27 +158,32 @@ func (s *Store) Create(tc model.TaskCreate) (*model.Task, error) {
 		enteredWaitAt = &nowStr
 	}
 
+	var keyVal interface{}
+	if tc.Key != nil {
+		keyVal = *tc.Key
+	}
+
 	result, err := s.db.Exec(
-		`INSERT INTO tasks (title, context, status, source_type, source_label, condition_type, condition_timeout, sort_order, entered_wait_at, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		task.Title, task.Context, task.Status, task.SourceType, task.SourceLabel,
+		`INSERT INTO tasks (key, title, context, status, source_type, source_label, condition_type, condition_timeout, sort_order, entered_wait_at, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		keyVal, task.Title, task.Context, task.Status, task.SourceType, task.SourceLabel,
 		task.ConditionType, task.ConditionTimeout, task.SortOrder, enteredWaitAt, nowStr,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("insert task: %w", err)
+		return nil, false, fmt.Errorf("insert task: %w", err)
 	}
 
 	id, _ := result.LastInsertId()
 	task.ID = id
-	return task, nil
+	return task, false, nil
 }
 
 func (s *Store) Get(id int64) (*model.Task, error) {
 	var t taskRow
 	err := s.db.QueryRow(
-		`SELECT id, title, context, status, source_type, source_label, condition_type, condition_timeout, sort_order, entered_wait_at, created_at, done_at, deleted_at
+		`SELECT id, key, title, context, status, source_type, source_label, condition_type, condition_timeout, sort_order, entered_wait_at, created_at, done_at, deleted_at
 		 FROM tasks WHERE id = ? AND deleted_at IS NULL`, id,
-	).Scan(&t.ID, &t.Title, &t.Context, &t.Status, &t.SourceType, &t.SourceLabel,
+	).Scan(&t.ID, &t.Key, &t.Title, &t.Context, &t.Status, &t.SourceType, &t.SourceLabel,
 		&t.ConditionType, &t.ConditionTimeout, &t.SortOrder, &t.EnteredWaitAt, &t.CreatedAt, &t.DoneAt, &t.DeletedAt)
 	if err != nil {
 		return nil, err
@@ -121,7 +197,7 @@ func (s *Store) List(params model.ListParams) ([]*model.Task, error) {
 
 	switch params.Status {
 	case model.StatusDone:
-		query = `SELECT id, title, context, status, source_type, source_label, condition_type, condition_timeout, sort_order, entered_wait_at, created_at, done_at, deleted_at
+		query = `SELECT id, key, title, context, status, source_type, source_label, condition_type, condition_timeout, sort_order, entered_wait_at, created_at, done_at, deleted_at
 			 FROM tasks WHERE status = 'done' AND deleted_at IS NULL`
 		if params.From != "" {
 			query += " AND done_at >= ?"
@@ -133,7 +209,7 @@ func (s *Store) List(params model.ListParams) ([]*model.Task, error) {
 		}
 		query += " ORDER BY done_at DESC"
 	default:
-		query = `SELECT id, title, context, status, source_type, source_label, condition_type, condition_timeout, sort_order, entered_wait_at, created_at, done_at, deleted_at
+		query = `SELECT id, key, title, context, status, source_type, source_label, condition_type, condition_timeout, sort_order, entered_wait_at, created_at, done_at, deleted_at
 			 FROM tasks WHERE status IN ('active', 'waiting') AND deleted_at IS NULL`
 		if params.Status == model.StatusActive || params.Status == model.StatusWaiting {
 			query += " AND status = ?"
@@ -151,7 +227,7 @@ func (s *Store) List(params model.ListParams) ([]*model.Task, error) {
 	var tasks []*model.Task
 	for rows.Next() {
 		var t taskRow
-		err := rows.Scan(&t.ID, &t.Title, &t.Context, &t.Status, &t.SourceType, &t.SourceLabel,
+		err := rows.Scan(&t.ID, &t.Key, &t.Title, &t.Context, &t.Status, &t.SourceType, &t.SourceLabel,
 			&t.ConditionType, &t.ConditionTimeout, &t.SortOrder, &t.EnteredWaitAt, &t.CreatedAt, &t.DoneAt, &t.DeletedAt)
 		if err != nil {
 			return nil, err
@@ -203,7 +279,7 @@ func (s *Store) Done(id int64) error {
 
 func (s *Store) Delete(id int64) error {
 	now := time.Now().Format(time.RFC3339)
-	_, err := s.db.Exec(`UPDATE tasks SET deleted_at=? WHERE id=?`, now, id)
+	_, err := s.db.Exec(`UPDATE tasks SET deleted_at=?, key=NULL WHERE id=?`, now, id)
 	return err
 }
 
@@ -286,7 +362,11 @@ func (s *Store) Reorder(id int64, req model.ReorderRequest) error {
 		_, err = s.db.Exec(`UPDATE tasks SET sort_order = ? WHERE id = ?`, maxOrder+1, id)
 		return err
 	default:
-		afterTask, err := s.Get(req.AfterID)
+		afterID, err := s.resolveIdentifier(req.After)
+		if err != nil {
+			return fmt.Errorf("resolve after: %w", err)
+		}
+		afterTask, err := s.Get(afterID)
 		if err != nil {
 			return err
 		}
@@ -304,7 +384,7 @@ func (s *Store) Reorder(id int64, req model.ReorderRequest) error {
 
 func (s *Store) Cleanup(olderThan time.Time) (int64, error) {
 	result, err := s.db.Exec(
-		`UPDATE tasks SET deleted_at = ? WHERE status = 'done' AND done_at <= ? AND deleted_at IS NULL`,
+		`UPDATE tasks SET deleted_at = ?, key = NULL WHERE status = 'done' AND done_at <= ? AND deleted_at IS NULL`,
 		time.Now().Format(time.RFC3339), olderThan.Format(time.RFC3339),
 	)
 	if err != nil {
@@ -317,7 +397,7 @@ func (s *Store) Cleanup(olderThan time.Time) (int64, error) {
 func (s *Store) GetExpiredWaiting() ([]*model.Task, error) {
 	now := time.Now()
 	rows, err := s.db.Query(
-		`SELECT id, title, context, status, source_type, source_label, condition_type, condition_timeout, sort_order, entered_wait_at, created_at, done_at, deleted_at
+		`SELECT id, key, title, context, status, source_type, source_label, condition_type, condition_timeout, sort_order, entered_wait_at, created_at, done_at, deleted_at
 		 FROM tasks WHERE status = 'waiting' AND condition_type = 'timeout' AND condition_timeout > 0 AND entered_wait_at IS NOT NULL AND deleted_at IS NULL`,
 	)
 	if err != nil {
@@ -328,7 +408,7 @@ func (s *Store) GetExpiredWaiting() ([]*model.Task, error) {
 	var tasks []*model.Task
 	for rows.Next() {
 		var t taskRow
-		err := rows.Scan(&t.ID, &t.Title, &t.Context, &t.Status, &t.SourceType, &t.SourceLabel,
+		err := rows.Scan(&t.ID, &t.Key, &t.Title, &t.Context, &t.Status, &t.SourceType, &t.SourceLabel,
 			&t.ConditionType, &t.ConditionTimeout, &t.SortOrder, &t.EnteredWaitAt, &t.CreatedAt, &t.DoneAt, &t.DeletedAt)
 		if err != nil {
 			return nil, err
@@ -347,6 +427,7 @@ func (s *Store) GetExpiredWaiting() ([]*model.Task, error) {
 // taskRow is used for scanning from SQLite (all TEXT time fields scan to *string)
 type taskRow struct {
 	ID               int64
+	Key              *string
 	Title            string
 	Context          string
 	Status           string
@@ -364,6 +445,7 @@ type taskRow struct {
 func (r *taskRow) toTask() *model.Task {
 	t := &model.Task{
 		ID:               r.ID,
+		Key:              r.Key,
 		Title:            r.Title,
 		Context:          r.Context,
 		Status:           r.Status,

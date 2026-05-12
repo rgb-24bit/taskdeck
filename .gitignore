@@ -33,3 +33,4 @@ go.work.sum
 
 bin
 .playwright-cli/
+.claude/settings.local.json

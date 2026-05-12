@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 
@@ -16,26 +17,29 @@ type Client struct {
 	HTTP    *http.Client
 }
 
-func New(port int) *Client {
+func New(host string, port int) *Client {
+	if host == "" {
+		host = "localhost"
+	}
 	return &Client{
-		BaseURL: fmt.Sprintf("http://localhost:%d", port),
+		BaseURL: "http://" + net.JoinHostPort(host, fmt.Sprintf("%d", port)),
 		HTTP:    &http.Client{},
 	}
 }
 
-func (c *Client) Add(tc model.TaskCreate) (*model.Task, error) {
+func (c *Client) Add(tc model.TaskCreate) (*model.Task, bool, error) {
 	data, _ := json.Marshal(tc)
 	resp, err := c.HTTP.Post(c.BaseURL+"/api/tasks", "application/json", bytes.NewReader(data))
 	if err != nil {
-		return nil, fmt.Errorf("request: %w", err)
+		return nil, false, fmt.Errorf("request: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 201 {
-		return nil, apiError(resp)
+	if resp.StatusCode != 201 && resp.StatusCode != 200 {
+		return nil, false, apiError(resp)
 	}
 	var task model.Task
 	json.NewDecoder(resp.Body).Decode(&task)
-	return &task, nil
+	return &task, resp.StatusCode == 200, nil
 }
 
 func (c *Client) List(params model.ListParams) ([]*model.Task, error) {
@@ -72,8 +76,8 @@ func (c *Client) List(params model.ListParams) ([]*model.Task, error) {
 	return tasks, nil
 }
 
-func (c *Client) Get(id int64) (*model.Task, error) {
-	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/tasks/%d", c.BaseURL, id))
+func (c *Client) Get(identifier string) (*model.Task, error) {
+	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/tasks/%s", c.BaseURL, identifier))
 	if err != nil {
 		return nil, fmt.Errorf("request: %w", err)
 	}
@@ -86,9 +90,9 @@ func (c *Client) Get(id int64) (*model.Task, error) {
 	return &task, nil
 }
 
-func (c *Client) Update(id int64, tu model.TaskUpdate) (*model.Task, error) {
+func (c *Client) Update(identifier string, tu model.TaskUpdate) (*model.Task, error) {
 	data, _ := json.Marshal(tu)
-	req, _ := http.NewRequest(http.MethodPatch, fmt.Sprintf("%s/api/tasks/%d", c.BaseURL, id), bytes.NewReader(data))
+	req, _ := http.NewRequest(http.MethodPatch, fmt.Sprintf("%s/api/tasks/%s", c.BaseURL, identifier), bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -103,8 +107,8 @@ func (c *Client) Update(id int64, tu model.TaskUpdate) (*model.Task, error) {
 	return &task, nil
 }
 
-func (c *Client) Done(id int64) error {
-	resp, err := c.HTTP.Post(fmt.Sprintf("%s/api/tasks/%d/done", c.BaseURL, id), "", nil)
+func (c *Client) Done(identifier string) error {
+	resp, err := c.HTTP.Post(fmt.Sprintf("%s/api/tasks/%s/done", c.BaseURL, identifier), "", nil)
 	if err != nil {
 		return fmt.Errorf("request: %w", err)
 	}
@@ -115,8 +119,8 @@ func (c *Client) Done(id int64) error {
 	return nil
 }
 
-func (c *Client) Delete(id int64) error {
-	req, _ := http.NewRequest(http.MethodDelete, fmt.Sprintf("%s/api/tasks/%d", c.BaseURL, id), nil)
+func (c *Client) Delete(identifier string) error {
+	req, _ := http.NewRequest(http.MethodDelete, fmt.Sprintf("%s/api/tasks/%s", c.BaseURL, identifier), nil)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return fmt.Errorf("request: %w", err)
@@ -128,8 +132,8 @@ func (c *Client) Delete(id int64) error {
 	return nil
 }
 
-func (c *Client) Activate(id int64) (*model.Task, error) {
-	resp, err := c.HTTP.Post(fmt.Sprintf("%s/api/tasks/%d/activate", c.BaseURL, id), "", nil)
+func (c *Client) Activate(identifier string) (*model.Task, error) {
+	resp, err := c.HTTP.Post(fmt.Sprintf("%s/api/tasks/%s/activate", c.BaseURL, identifier), "", nil)
 	if err != nil {
 		return nil, fmt.Errorf("request: %w", err)
 	}
@@ -142,13 +146,13 @@ func (c *Client) Activate(id int64) (*model.Task, error) {
 	return &task, nil
 }
 
-func (c *Client) Wait(id int64, conditionType string, timeout int64) (*model.Task, error) {
+func (c *Client) Wait(identifier string, conditionType string, timeout int64) (*model.Task, error) {
 	body := map[string]interface{}{
 		"condition_type":    conditionType,
 		"condition_timeout": timeout,
 	}
 	data, _ := json.Marshal(body)
-	resp, err := c.HTTP.Post(fmt.Sprintf("%s/api/tasks/%d/wait", c.BaseURL, id), "application/json", bytes.NewReader(data))
+	resp, err := c.HTTP.Post(fmt.Sprintf("%s/api/tasks/%s/wait", c.BaseURL, identifier), "application/json", bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("request: %w", err)
 	}
@@ -161,9 +165,9 @@ func (c *Client) Wait(id int64, conditionType string, timeout int64) (*model.Tas
 	return &task, nil
 }
 
-func (c *Client) Reorder(id int64, req model.ReorderRequest) error {
+func (c *Client) Reorder(identifier string, req model.ReorderRequest) error {
 	data, _ := json.Marshal(req)
-	resp, err := c.HTTP.Post(fmt.Sprintf("%s/api/tasks/%d/reorder", c.BaseURL, id), "application/json", bytes.NewReader(data))
+	resp, err := c.HTTP.Post(fmt.Sprintf("%s/api/tasks/%s/reorder", c.BaseURL, identifier), "application/json", bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("request: %w", err)
 	}

@@ -21,6 +21,7 @@ const (
 
 type Task struct {
 	ID               int64      `json:"id"`
+	Key              *string    `json:"key,omitempty"`
 	Title            string     `json:"title"`
 	Context          string     `json:"context"`
 	Status           string     `json:"status"`
@@ -36,7 +37,8 @@ type Task struct {
 }
 
 type TaskCreate struct {
-	Title           string `json:"title"`
+	Key             *string `json:"key,omitempty"`
+	Title           string  `json:"title"`
 	Context         string `json:"context"`
 	Status          string `json:"status"`
 	SourceType      string `json:"source_type"`
@@ -55,7 +57,7 @@ type TaskUpdate struct {
 }
 
 type ReorderRequest struct {
-	AfterID  int64  `json:"after_id"`
+	After    string `json:"after"`
 	Position string `json:"position"` // "top" | "bottom"
 }
 

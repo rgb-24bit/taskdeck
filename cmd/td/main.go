@@ -63,11 +63,14 @@ func mustConfig() *config.Config {
 
 func mustClient() *client.Client {
 	cfg := mustConfig()
-	return client.New(cfg.Port)
+	return client.New(cfg.Host, cfg.Port)
 }
 
 func ensureDaemon() {
 	cfg := mustConfig()
+	if !isLocalHost(cfg.Host) {
+		return
+	}
 	if daemon.IsRunning(cfg.PidPath) {
 		return
 	}
@@ -76,14 +79,18 @@ func ensureDaemon() {
 		fmt.Fprintf(os.Stderr, "start daemon: %v\n", err)
 		os.Exit(1)
 	}
-	// Wait for daemon to be ready
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 50; i++ {
+		time.Sleep(100 * time.Millisecond)
 		if daemon.IsRunning(cfg.PidPath) {
 			return
 		}
 	}
 	fmt.Fprintln(os.Stderr, "daemon failed to start")
 	os.Exit(1)
+}
+
+func isLocalHost(host string) bool {
+	return host == "" || host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
 func cmdServe() {
@@ -103,6 +110,7 @@ func cmdAdd(args []string) {
 	sourceType := model.SourceManual
 	sourceLabel := ""
 	var timeout int64
+	var key *string
 
 	// Parse flags
 	var titleParts []string
@@ -121,6 +129,11 @@ func cmdAdd(args []string) {
 			if i < len(args) {
 				sourceType, sourceLabel = parseSource(args[i])
 			}
+		case "-k", "--key":
+			i++
+			if i < len(args) {
+				key = &args[i]
+			}
 		default:
 			titleParts = append(titleParts, args[i])
 		}
@@ -128,11 +141,12 @@ func cmdAdd(args []string) {
 
 	title := strings.Join(titleParts, " ")
 	if title == "" {
-		fmt.Fprintln(os.Stderr, "usage: td add [-w] [-t duration] [-s source[:label]] <title>")
+		fmt.Fprintln(os.Stderr, "usage: td add [-w] [-t duration] [-s source[:label]] [-k key] <title>")
 		os.Exit(1)
 	}
 
 	tc := model.TaskCreate{
+		Key:              key,
 		Title:            title,
 		Status:           status,
 		ConditionType:    conditionType,
@@ -141,12 +155,16 @@ func cmdAdd(args []string) {
 		SourceLabel:      sourceLabel,
 	}
 
-	task, err := cl.Add(tc)
+	task, isUpdate, err := cl.Add(tc)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "add: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("created task #%d: %s\n", task.ID, task.Title)
+	if isUpdate {
+		fmt.Printf("updated task #%d: %s\n", task.ID, task.Title)
+	} else {
+		fmt.Printf("created task #%d: %s\n", task.ID, task.Title)
+	}
 }
 
 func cmdList(args []string) {
@@ -185,7 +203,11 @@ func cmdList(args []string) {
 		icon := statusIcon(t)
 		idStr := fmt.Sprintf("\033[33m#%d\033[0m", t.ID) // yellow
 		statusTag := statusTag(t)
-		fmt.Printf("  %s %s %s %s\n", icon, idStr, statusTag, t.Title)
+		keyStr := ""
+		if t.Key != nil {
+			keyStr = fmt.Sprintf(" \033[90m[%s]\033[0m", *t.Key)
+		}
+		fmt.Printf("  %s %s%s %s %s\n", icon, idStr, keyStr, statusTag, t.Title)
 	}
 }
 
@@ -194,17 +216,19 @@ func cmdShow(args []string) {
 	cl := mustClient()
 
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: td show <id>")
+		fmt.Fprintln(os.Stderr, "usage: td show <id|key>")
 		os.Exit(1)
 	}
-	id := mustParseID(args[0])
-	task, err := cl.Get(id)
+	task, err := cl.Get(args[0])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "show: %v\n", err)
 		os.Exit(1)
 	}
 
 	fmt.Printf("\033[1m#%d %s\033[0m\n", task.ID, task.Title)
+	if task.Key != nil {
+		fmt.Printf("  Key:         %s\n", *task.Key)
+	}
 	fmt.Printf("  Status:       %s\n", statusTag(task))
 	fmt.Printf("  Source:       %s %s\n", sourceIcon(task.SourceType), task.SourceType)
 	if task.SourceLabel != "" {
@@ -233,11 +257,10 @@ func cmdEdit(args []string) {
 	cl := mustClient()
 
 	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: td edit <id> title <new title>")
-		fmt.Fprintln(os.Stderr, "       td edit <id> timeout <duration>")
+		fmt.Fprintln(os.Stderr, "usage: td edit <id|key> title <new title>")
+		fmt.Fprintln(os.Stderr, "       td edit <id|key> timeout <duration>")
 		os.Exit(1)
 	}
-	id := mustParseID(args[0])
 
 	var tu model.TaskUpdate
 	switch args[1] {
@@ -246,7 +269,7 @@ func cmdEdit(args []string) {
 		tu.Title = &title
 	case "timeout":
 		if len(args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: td edit <id> timeout <duration>")
+			fmt.Fprintln(os.Stderr, "usage: td edit <id|key> timeout <duration>")
 			os.Exit(1)
 		}
 		t := parseTimeout(args[2])
@@ -258,7 +281,7 @@ func cmdEdit(args []string) {
 		os.Exit(1)
 	}
 
-	task, err := cl.Update(id, tu)
+	task, err := cl.Update(args[0], tu)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "edit: %v\n", err)
 		os.Exit(1)
@@ -271,15 +294,14 @@ func cmdDone(args []string) {
 	cl := mustClient()
 
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: td done <id>")
+		fmt.Fprintln(os.Stderr, "usage: td done <id|key>")
 		os.Exit(1)
 	}
-	id := mustParseID(args[0])
-	if err := cl.Done(id); err != nil {
+	if err := cl.Done(args[0]); err != nil {
 		fmt.Fprintf(os.Stderr, "done: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("task #%d marked done\n", id)
+	fmt.Printf("task %s marked done\n", args[0])
 }
 
 func cmdDelete(args []string) {
@@ -287,15 +309,14 @@ func cmdDelete(args []string) {
 	cl := mustClient()
 
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: td delete <id>")
+		fmt.Fprintln(os.Stderr, "usage: td delete <id|key>")
 		os.Exit(1)
 	}
-	id := mustParseID(args[0])
-	if err := cl.Delete(id); err != nil {
+	if err := cl.Delete(args[0]); err != nil {
 		fmt.Fprintf(os.Stderr, "delete: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("task #%d deleted\n", id)
+	fmt.Printf("task %s deleted\n", args[0])
 }
 
 func cmdMove(args []string) {
@@ -303,10 +324,9 @@ func cmdMove(args []string) {
 	cl := mustClient()
 
 	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: td move <id> --after <id> | --top | --bottom | --wait")
+		fmt.Fprintln(os.Stderr, "usage: td move <id|key> --after <id|key> | --top | --bottom | --wait")
 		os.Exit(1)
 	}
-	id := mustParseID(args[0])
 
 	switch args[1] {
 	case "--wait", "-w":
@@ -316,7 +336,7 @@ func cmdMove(args []string) {
 			conditionType = model.ConditionTimeout
 			timeout = parseTimeout(args[3])
 		}
-		task, err := cl.Wait(id, conditionType, timeout)
+		task, err := cl.Wait(args[0], conditionType, timeout)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "move --wait: %v\n", err)
 			os.Exit(1)
@@ -324,27 +344,26 @@ func cmdMove(args []string) {
 		fmt.Printf("task #%d moved to waiting pool\n", task.ID)
 	case "--after":
 		if len(args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: td move <id> --after <target_id>")
+			fmt.Fprintln(os.Stderr, "usage: td move <id|key> --after <target-id|key>")
 			os.Exit(1)
 		}
-		afterID := mustParseID(args[2])
-		if err := cl.Reorder(id, model.ReorderRequest{AfterID: afterID}); err != nil {
+		if err := cl.Reorder(args[0], model.ReorderRequest{After: args[2]}); err != nil {
 			fmt.Fprintf(os.Stderr, "move: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Printf("task #%d moved after #%d\n", id, afterID)
+		fmt.Printf("task %s moved after %s\n", args[0], args[2])
 	case "--top":
-		if err := cl.Reorder(id, model.ReorderRequest{Position: "top"}); err != nil {
+		if err := cl.Reorder(args[0], model.ReorderRequest{Position: "top"}); err != nil {
 			fmt.Fprintf(os.Stderr, "move: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Printf("task #%d moved to top\n", id)
+		fmt.Printf("task %s moved to top\n", args[0])
 	case "--bottom":
-		if err := cl.Reorder(id, model.ReorderRequest{Position: "bottom"}); err != nil {
+		if err := cl.Reorder(args[0], model.ReorderRequest{Position: "bottom"}); err != nil {
 			fmt.Fprintf(os.Stderr, "move: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Printf("task #%d moved to bottom\n", id)
+		fmt.Printf("task %s moved to bottom\n", args[0])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown move target: %s\n", args[1])
 		os.Exit(1)
@@ -356,11 +375,10 @@ func cmdActivate(args []string) {
 	cl := mustClient()
 
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: td activate <id>")
+		fmt.Fprintln(os.Stderr, "usage: td activate <id|key>")
 		os.Exit(1)
 	}
-	id := mustParseID(args[0])
-	task, err := cl.Activate(id)
+	task, err := cl.Activate(args[0])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "activate: %v\n", err)
 		os.Exit(1)
@@ -373,17 +391,15 @@ func cmdContext(args []string) {
 	cl := mustClient()
 
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: td context <id> [--append <text>]")
+		fmt.Fprintln(os.Stderr, "usage: td context <id|key> [--append <text>]")
 		os.Exit(1)
 	}
-
-	id := mustParseID(args[0])
 
 	if len(args) >= 3 && args[1] == "--append" {
 		appendText := strings.Join(args[2:], " ")
 		var tu model.TaskUpdate
 		tu.ContextAppend = &appendText
-		task, err := cl.Update(id, tu)
+		task, err := cl.Update(args[0], tu)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "context: %v\n", err)
 			os.Exit(1)
@@ -393,7 +409,7 @@ func cmdContext(args []string) {
 		newContext := strings.Join(args[2:], " ")
 		var tu model.TaskUpdate
 		tu.Context = &newContext
-		task, err := cl.Update(id, tu)
+		task, err := cl.Update(args[0], tu)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "context: %v\n", err)
 			os.Exit(1)
@@ -401,7 +417,7 @@ func cmdContext(args []string) {
 		fmt.Printf("context updated for task #%d\n", task.ID)
 	} else {
 		// Display context
-		task, err := cl.Get(id)
+		task, err := cl.Get(args[0])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "context: %v\n", err)
 			os.Exit(1)
@@ -436,30 +452,21 @@ func printUsage() {
 
 commands:
   serve                   start the daemon
-  add [-w] [-t dur] [-s type[:label]] <title>  add a task
+  add [-w] [-t dur] [-s type[:label]] [-k key] <title>  add a task
   list [-w] [-d]          list active/waiting/done tasks
-  show <id>               show task details
-  edit <id> title <text>  edit task title
-  edit <id> timeout <dur> set timeout condition
-  done <id>               mark task done
-  delete <id>             hard delete task
-  move <id> --after <id>  reorder in queue
-  move <id> --top|--bottom move to top/bottom
-  move <id> --wait [-t dur] move to waiting pool
-  activate <id>           activate from waiting pool
-  context <id>            show task context
-  context <id> --append <text>  append to context
-  context <id> --set <text>     set context
+  show <id|key>           show task details
+  edit <id|key> title <text>  edit task title
+  edit <id|key> timeout <dur> set timeout condition
+  done <id|key>           mark task done
+  delete <id|key>         hard delete task
+  move <id|key> --after <id|key>  reorder in queue
+  move <id|key> --top|--bottom move to top/bottom
+  move <id|key> --wait [-t dur] move to waiting pool
+  activate <id|key>       activate from waiting pool
+  context <id|key>        show task context
+  context <id|key> --append <text>  append to context
+  context <id|key> --set <text>     set context
   cleanup [duration]      delete done tasks older than duration (default 30d)`)
-}
-
-func mustParseID(s string) int64 {
-	id, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "invalid id: %s\n", s)
-		os.Exit(1)
-	}
-	return id
 }
 
 func parseSource(s string) (string, string) {
