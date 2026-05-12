@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -35,7 +36,7 @@ func Run(cfg *config.Config) error {
 	}
 	defer os.Remove(cfg.PidPath)
 
-	setupLog(cfg.LogPath)
+	logStop := setupLog(cfg.LogPath)
 
 	st, err := store.New(cfg.DBPath)
 	if err != nil {
@@ -43,10 +44,18 @@ func Run(cfg *config.Config) error {
 	}
 	defer st.Close()
 
-	srv := server.New(st)
+	handler := server.New(st)
 
-	// Timeout checker
-	go timeoutChecker(st, 30*time.Second)
+	// Stop channels for background goroutines
+	done := make(chan struct{})
+
+	go timeoutChecker(st, 30*time.Second, done)
+
+	addr := fmt.Sprintf(":%d", cfg.Port)
+	httpSrv := &http.Server{
+		Addr:    addr,
+		Handler: handler,
+	}
 
 	// Signal handling
 	sigCh := make(chan os.Signal, 1)
@@ -54,14 +63,23 @@ func Run(cfg *config.Config) error {
 	go func() {
 		<-sigCh
 		log.Println("shutting down...")
+		close(done)
+		close(logStop)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := httpSrv.Shutdown(ctx); err != nil {
+			log.Printf("shutdown error: %v", err)
+		}
 		st.Close()
 		os.Remove(cfg.PidPath)
 		os.Exit(0)
 	}()
 
-	addr := fmt.Sprintf(":%d", cfg.Port)
 	log.Printf("taskdeck serving on http://localhost%s", addr)
-	return http.ListenAndServe(addr, srv)
+	if err := httpSrv.ListenAndServe(); err != http.ErrServerClosed {
+		return err
+	}
+	return nil
 }
 
 func daemonize() error {
@@ -106,49 +124,61 @@ func IsRunning(path string) bool {
 	return proc.Signal(syscall.Signal(0)) == nil
 }
 
-func setupLog(path string) {
+func setupLog(path string) chan struct{} {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		log.Printf("cannot open log: %v", err)
-		return
+		return make(chan struct{})
 	}
 	log.SetOutput(io.MultiWriter(f, os.Stderr))
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
-	// Rotate if needed
+	stop := make(chan struct{})
 	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
 		for {
-			time.Sleep(5 * time.Minute)
-			stat, err := os.Stat(path)
-			if err != nil {
-				continue
-			}
-			if stat.Size() > maxLogSize {
-				os.Rename(path, path+".1")
-				newF, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-				if err == nil {
-					log.SetOutput(io.MultiWriter(newF, os.Stderr))
+			select {
+			case <-ticker.C:
+				stat, err := os.Stat(path)
+				if err != nil {
+					continue
 				}
+				if stat.Size() > maxLogSize {
+					os.Rename(path, path+".1")
+					newF, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+					if err == nil {
+						log.SetOutput(io.MultiWriter(newF, os.Stderr))
+					}
+				}
+			case <-stop:
+				return
 			}
 		}
 	}()
+	return stop
 }
 
-func timeoutChecker(st *store.Store, interval time.Duration) {
+func timeoutChecker(st *store.Store, interval time.Duration, done <-chan struct{}) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	for range ticker.C {
-		tasks, err := st.GetExpiredWaiting()
-		if err != nil {
-			log.Printf("timeout check error: %v", err)
-			continue
-		}
-		for _, t := range tasks {
-			if _, err := st.Activate(t.ID); err != nil {
-				log.Printf("auto-activate %d error: %v", t.ID, err)
-			} else {
-				log.Printf("auto-activated task %d: %s", t.ID, t.Title)
+	for {
+		select {
+		case <-ticker.C:
+			tasks, err := st.GetExpiredWaiting()
+			if err != nil {
+				log.Printf("timeout check error: %v", err)
+				continue
 			}
+			for _, t := range tasks {
+				if _, err := st.Activate(t.ID); err != nil {
+					log.Printf("auto-activate %d error: %v", t.ID, err)
+				} else {
+					log.Printf("auto-activated task %d: %s", t.ID, t.Title)
+				}
+			}
+		case <-done:
+			return
 		}
 	}
 }
